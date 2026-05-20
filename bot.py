@@ -22,9 +22,15 @@ def send_signal(message):
     }
     try:
         response = requests.post(url, data=data, timeout=10)
-        print(f"✅ Signal sent: {response.status_code}")
+        if response.status_code == 200:
+            print(f"✅ Signal sent successfully!")
+            return True
+        else:
+            print(f"❌ Error {response.status_code}: {response.text}")
+            return False
     except Exception as e:
         print(f"❌ Error sending signal: {e}")
+        return False
 
 def calculate_indicators(stock_symbol):
     """Calculate technical indicators for stock"""
@@ -134,18 +140,54 @@ def format_signal_message(signal_data):
 """
     return message
 
+def send_startup_message():
+    """Send startup notification"""
+    message = """
+🚀 <b>STOCK SIGNAL BOT STARTED</b> 🚀
+
+✅ Bot is now live and monitoring Indian stocks!
+📊 Scanning 10 major NSE stocks every 15 minutes
+
+Stocks being monitored:
+• RELIANCE
+• TCS
+• INFY
+• HDFC
+• ICICIBANK
+• SBIN
+• LT
+• MARUTI
+• WIPRO
+• BAJAJFINSV
+
+🎯 You will receive BUY/SELL signals with targets and stoploss
+💡 Using advanced technical indicators (RSI, MACD, SMA)
+
+Channel: @Sharemarketdiscussions_bot
+
+#TradingSignals #StockMarket #NSE #IndianStocks
+"""
+    send_signal(message)
+    print("📢 Startup message sent!")
+
 def main():
     """Main bot loop"""
     print("🚀 Indian Share Market Bot Started!")
     print(f"Monitoring stocks: {', '.join(STOCKS)}")
+    print(f"Channel ID: {CHANNEL_ID}")
     print(f"Bot started at: {datetime.now()}\n")
+    
+    # Send startup message
+    send_startup_message()
+    time.sleep(2)
     
     last_signal_time = {}
     
     while True:
         try:
-            print(f"🔄 Scanning stocks at {datetime.now().strftime('%H:%M:%S')}...")
+            print(f"\n🔄 Scanning stocks at {datetime.now().strftime('%H:%M:%S')}...")
             
+            signals_found = 0
             for stock in STOCKS:
                 stock_name = stock.split('.')[0]
                 
@@ -159,17 +201,30 @@ def main():
                 
                 if signal_data:
                     message = format_signal_message(signal_data)
-                    send_signal(message)
-                    last_signal_time[stock_name] = datetime.now()
-                    print(f"✅ {signal_data['signal']} signal sent for {stock_name}")
+                    if send_signal(message):
+                        last_signal_time[stock_name] = datetime.now()
+                        print(f"✅ {signal_data['signal']} signal sent for {stock_name}")
+                        signals_found += 1
+                        time.sleep(1)  # Prevent rate limiting
+            
+            if signals_found == 0:
+                print("ℹ️ No trading signals found in this scan")
+            else:
+                print(f"📊 Total signals sent: {signals_found}")
             
             # Wait 15 minutes before next scan
-            print(f"⏳ Next scan in 15 minutes...\n")
+            print(f"⏳ Next scan in 15 minutes... ({datetime.now().strftime('%H:%M:%S')})")
             time.sleep(900)  # 15 minutes
             
         except Exception as e:
             print(f"❌ Error in main loop: {e}")
+            print("⏳ Retrying in 60 seconds...")
             time.sleep(60)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n❌ Bot stopped by user")
+    except Exception as e:
+        print(f"\n\n❌ Critical error: {e}")
