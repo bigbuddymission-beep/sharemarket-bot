@@ -6,7 +6,7 @@ from datetime import datetime
 import talib
 
 BOT_TOKEN = "667814057:AAGiL1EB6Go3zbYmicm5tyxKucWdfCxRYCY"
-CHANNEL_ID = -1003967766296
+CHANNEL_USERNAME = "@stocksignlas"  # Public channel username
 
 # Indian stocks to monitor
 STOCKS = ["RELIANCE.NS", "TCS.NS", "INFY.NS", "HDFC.NS", "ICICIBANK.NS", 
@@ -16,14 +16,14 @@ def send_signal(message):
     """Send signal to Telegram channel"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
-        "chat_id": CHANNEL_ID,
+        "chat_id": CHANNEL_USERNAME,
         "text": message,
         "parse_mode": "HTML"
     }
     try:
         response = requests.post(url, data=data, timeout=10)
         if response.status_code == 200:
-            print(f"✅ Signal sent successfully!")
+            print(f"✅ Signal sent successfully to {CHANNEL_USERNAME}!")
             return True
         else:
             print(f"❌ Error {response.status_code}: {response.text}")
@@ -163,7 +163,7 @@ Stocks being monitored:
 🎯 You will receive BUY/SELL signals with targets and stoploss
 💡 Using advanced technical indicators (RSI, MACD, SMA)
 
-Channel: @Sharemarketdiscussions_bot
+Channel: @stocksignlas
 
 #TradingSignals #StockMarket #NSE #IndianStocks
 """
@@ -174,7 +174,7 @@ def main():
     """Main bot loop"""
     print("🚀 Indian Share Market Bot Started!")
     print(f"Monitoring stocks: {', '.join(STOCKS)}")
-    print(f"Channel ID: {CHANNEL_ID}")
+    print(f"Channel: {CHANNEL_USERNAME}")
     print(f"Bot started at: {datetime.now()}\n")
     
     # Send startup message
