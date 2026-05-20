@@ -1,13 +1,14 @@
 import requests
+from datetime import datetime
 
 BOT_TOKEN = "667814057:AAGiL1EB6Go3zbYmicm5tyxKucWdfCxRYCY"
-CHANNEL_ID = -1003967766296
+CHANNEL_USERNAME = "@stocksignlas"
 
 def send_test_message():
-    """Send test message to Telegram channel"""
+    """Send test message to public Telegram channel"""
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     
-    message = """
+    message = f"""
 🧪 <b>TEST MESSAGE - Bot Connection Successful!</b> 🧪
 
 ✅ Bot is successfully connected to your channel!
@@ -30,16 +31,13 @@ RELIANCE | TCS | INFY | HDFC | ICICIBANK | SBIN | LT | MARUTI | WIPRO | BAJAJFIN
 ⏰ <b>Test Time:</b> {datetime.now().strftime("%d-%m-%Y %H:%M:%S")}
 
 Bot: @Sharemarketdiscussions_bot
-Channel: @Sharemarketdiscussions
+Channel: {CHANNEL_USERNAME}
 
 #IndianStocks #TradingSignals #NSE #StockMarket
 """
     
-    from datetime import datetime
-    message = message.format(datetime=datetime)
-    
     data = {
-        "chat_id": CHANNEL_ID,
+        "chat_id": CHANNEL_USERNAME,
         "text": message,
         "parse_mode": "HTML"
     }
@@ -48,8 +46,7 @@ Channel: @Sharemarketdiscussions
         response = requests.post(url, data=data, timeout=10)
         if response.status_code == 200:
             print("✅ TEST MESSAGE SENT SUCCESSFULLY!")
-            print(f"Message sent to Channel ID: {CHANNEL_ID}")
-            print(f"Response: {response.json()}")
+            print(f"Message sent to Channel: {CHANNEL_USERNAME}")
             return True
         else:
             print(f"❌ Error: {response.status_code}")
