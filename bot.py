@@ -8,8 +8,9 @@ import os
 from telegram import Bot
 from telegram.constants import ParseMode
 
-BOT_TOKEN  = os.environ.get("TELEGRAM_TOKEN")
-CHANNEL_ID = int(os.environ.get("CHANNEL_ID", "-1003967766296"))
+# ── CONFIG ─────────────────────────────────────────
+BOT_TOKEN  = os.environ.get("TELEGRAM_TOKEN") or "667814057:AAGiL1EB6Go3zbYmicm5tyxKucWdfCxRYCY"
+CHANNEL_ID = -1003967766296
 IST        = pytz.timezone('Asia/Kolkata')
 
 SYMBOLS = {
@@ -25,28 +26,53 @@ SYMBOLS = {
     "ONGC":       "ONGC.NS",
 }
 
+# ── MARKET CHECK — SABSE PEHLE ─────────────────────
+def is_market_open():
+    now = datetime.now(IST)
+    print(f"Current IST time: {now.strftime('%A %d %b %Y %I:%M %p IST')}")
+    if now.weekday() >= 5:
+        print("Weekend — market closed.")
+        return False
+    op = now.replace(hour=9,  minute=15, second=0, microsecond=0)
+    cl = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    if not (op <= now <= cl):
+        print(f"Outside market hours (9:15 AM - 3:30 PM IST). Current: {now.strftime('%I:%M %p')}")
+        return False
+    return True
+
+def get_job_type():
+    now = datetime.now(IST)
+    h, m = now.hour, now.minute
+    if h == 9 and m < 16:   return "pre_market"
+    if h == 9 and 16 <= m < 20: return "market_open"
+    if h == 15 and m >= 30: return "market_close"
+    return "scan"
+
+# ── INDICATORS ─────────────────────────────────────
 def get_rsi(close, period=14):
     delta = close.diff()
-    gain  = delta.where(delta > 0, 0).rolling(period).mean()
-    loss  = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs    = gain / (loss + 0.0001)
+    gain  = delta.clip(lower=0).rolling(period).mean()
+    loss  = (-delta.clip(upper=0)).rolling(period).mean()
+    rs    = gain / (loss + 1e-10)
     return 100 - (100 / (1 + rs))
 
 def get_macd(close):
-    ema12 = close.ewm(span=12, adjust=False).mean()
-    ema26 = close.ewm(span=26, adjust=False).mean()
-    macd  = ema12 - ema26
-    signal= macd.ewm(span=9, adjust=False).mean()
+    ema12  = close.ewm(span=12, adjust=False).mean()
+    ema26  = close.ewm(span=26, adjust=False).mean()
+    macd   = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
     return macd, signal
 
-def get_ema(close, period):
-    return close.ewm(span=period, adjust=False).mean()
+def get_ema(close, p):
+    return close.ewm(span=p, adjust=False).mean()
 
+# ── ANALYSIS ───────────────────────────────────────
 def analyze(name, ticker):
     try:
         df = yf.download(ticker, period="30d", interval="15m",
                          progress=False, auto_adjust=True)
         if df is None or len(df) < 40:
+            print(f"  {name}: Not enough data")
             return None
 
         close  = df["Close"].squeeze()
@@ -74,38 +100,31 @@ def analyze(name, ticker):
         chg       = round(((cmp - prev) / prev) * 100, 2)
 
         score = 0
+        if rsi < 35:            score += 3
+        elif rsi < 45:          score += 1
+        elif rsi > 65:          score -= 3
+        elif rsi > 55:          score -= 1
 
-        # RSI
-        if rsi < 35:   score += 3
-        elif rsi < 45: score += 1
-        elif rsi > 65: score -= 3
-        elif rsi > 55: score -= 1
-
-        # MACD
-        if macd_v > sig_v and hist > hist_prev: score += 2
+        if macd_v > sig_v and hist > hist_prev:   score += 2
         elif macd_v < sig_v and hist < hist_prev: score -= 2
 
-        # EMA alignment
-        if ema9_v > ema21_v > ema50_v:  score += 2
+        if ema9_v > ema21_v > ema50_v:   score += 2
         elif ema9_v < ema21_v < ema50_v: score -= 2
-        elif cmp > ema21_v: score += 1
-        else: score -= 1
+        elif cmp > ema21_v:              score += 1
+        else:                            score -= 1
 
-        # Volume
         if vol_ratio > 1.5:
             score += 1 if score > 0 else -1
 
-        if score >= 4:
-            signal = "BUY"
-        elif score <= -4:
-            signal = "SELL"
+        if score >= 4:    signal = "BUY"
+        elif score <= -4: signal = "SELL"
         else:
+            print(f"  {name}: Score {score} — no strong signal")
             return None
 
         conf = min(94, abs(score) * 10 + 45)
-
-        atr = float((df["High"].squeeze() - df["Low"].squeeze())
-                    .rolling(14).mean().iloc[-1])
+        atr  = float((df["High"].squeeze() - df["Low"].squeeze())
+                     .rolling(14).mean().iloc[-1])
 
         if signal == "BUY":
             entry = round(cmp, 2)
@@ -120,152 +139,148 @@ def analyze(name, ticker):
             t2    = round(cmp - atr * 3.0, 2)
             t3    = round(cmp - atr * 4.5, 2)
 
-        rr = round(abs(t1 - entry) / abs(sl - entry + 0.01), 2)
+        rr = round(abs(t1 - entry) / (abs(sl - entry) + 0.01), 2)
+        print(f"  {name}: {signal} signal! Score={score} Conf={conf}%")
 
         return dict(name=name, signal=signal, cmp=cmp, chg=chg,
                     entry=entry, sl=sl, t1=t1, t2=t2, t3=t3,
                     rr=rr, rsi=round(rsi,1), conf=conf,
-                    vol=vol_ratio,
-                    macd_bull=macd_v > sig_v,
+                    vol=vol_ratio, macd_bull=macd_v > sig_v,
                     ema_bull=ema9_v > ema21_v)
     except Exception as e:
-        print(f"Error {name}: {e}")
+        print(f"  Error {name}: {e}")
         return None
 
-def fmt(s):
-    e  = "🟢" if s["signal"] == "BUY" else "🔴"
-    hd = "📈 *BUY SIGNAL*" if s["signal"] == "BUY" else "📉 *SELL SIGNAL*"
-    chg_str = f"+{s['chg']}%" if s["chg"] >= 0 else f"{s['chg']}%"
-    stars = "⭐" * min(5, max(1, s["conf"] // 20))
-    macd_str = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
-    ema_str  = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
+# ── MESSAGE FORMAT ─────────────────────────────────
+def fmt_signal(s):
+    e   = "🟢" if s["signal"] == "BUY" else "🔴"
+    hd  = "📈 *BUY SIGNAL*" if s["signal"] == "BUY" else "📉 *SELL SIGNAL*"
+    chg = f"+{s['chg']}%" if s["chg"] >= 0 else f"{s['chg']}%"
+    st  = "⭐" * min(5, max(1, s["conf"] // 20))
     now = datetime.now(IST).strftime("%I:%M %p IST")
+    mk  = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
+    ek  = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
+    rsi_tag = "🔥 Oversold" if s["rsi"]<35 else "❄️ Overbought" if s["rsi"]>65 else "✅ Normal"
 
     return (
         f"{e} {hd}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📌 *{s['name']}*\n"
-        f"💰 CMP: ₹`{s['cmp']}` ({chg_str})\n"
-        f"🕐 Time: `{now}`\n"
+        f"💰 CMP: ₹{s['cmp']} \\({chg}\\)\n"
+        f"🕐 Time: {now}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 *TRADE SETUP*\n"
-        f"▶️ Entry:    ₹`{s['entry']}`\n"
-        f"🛑 Stop Loss: ₹`{s['sl']}`\n"
-        f"🎯 Target 1:  ₹`{s['t1']}`\n"
-        f"🎯 Target 2:  ₹`{s['t2']}`\n"
-        f"🎯 Target 3:  ₹`{s['t3']}`\n"
-        f"⚖️ R:R Ratio: `1:{s['rr']}`\n"
+        f"▶️ Entry:     ₹{s['entry']}\n"
+        f"🛑 Stop Loss: ₹{s['sl']}\n"
+        f"🎯 Target 1:  ₹{s['t1']}\n"
+        f"🎯 Target 2:  ₹{s['t2']}\n"
+        f"🎯 Target 3:  ₹{s['t3']}\n"
+        f"⚖️ R:R Ratio: 1:{s['rr']}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📐 *INDICATORS*\n"
-        f"• RSI:    `{s['rsi']}` {'🔥 Oversold' if s['rsi']<35 else '❄️ Overbought' if s['rsi']>65 else '✅ Normal'}\n"
-        f"• MACD:   `{macd_str}`\n"
-        f"• EMA:    `{ema_str}`\n"
-        f"• Volume: `{s['vol']}x` {'🚀' if s['vol']>2 else '📊'}\n"
-        f"• Confidence: {stars} `{s['conf']}%`\n"
+        f"• RSI:    {s['rsi']} \\— {rsi_tag}\n"
+        f"• MACD:   {mk}\n"
+        f"• EMA:    {ek}\n"
+        f"• Volume: {s['vol']}x {'🚀' if s['vol']>2 else '📊'}\n"
+        f"• Confidence: {st} {s['conf']}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ _Educational only\\. Not SEBI advice\\._\n"
         f"🔔 @SignalBharat"
     )
 
-def is_market_open():
-    now  = datetime.now(IST)
-    if now.weekday() >= 5:
-        return False
-    op  = now.replace(hour=9,  minute=15, second=0, microsecond=0)
-    cl  = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return op <= now <= cl
-
-def get_job_type():
-    now = datetime.now(IST)
-    h, m = now.hour, now.minute
-    if h == 9 and m < 15:   return "pre_market"
-    if h == 9 and m == 16:  return "market_open"
-    if h == 15 and m >= 31: return "market_close"
-    return "scan"
-
+# ── MAIN ───────────────────────────────────────────
 async def main():
-    bot      = Bot(token=BOT_TOKEN)
-    job_type = get_job_type()
-    now_str  = datetime.now(IST).strftime("%d %b %Y %I:%M %p IST")
+    now     = datetime.now(IST)
+    job     = get_job_type()
+    now_str = now.strftime("%d %b %Y %I:%M %p IST")
 
-    if job_type == "pre_market":
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=(
-                "⏰ *PRE\\-MARKET ALERT*\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📅 `{now_str}`\n"
-                "🕘 Market opens in 15 minutes\\!\n\n"
-                "📌 *WATCH LEVELS*\n"
-                "• NIFTY: Support 22,200 \\| Resistance 22,800\n"
-                "• BANKNIFTY: Support 48,500 \\| Resistance 49,500\n\n"
-                "🎯 Signals 9:15 AM se aayenge\\!\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                "⚠️ _Educational only\\. Not SEBI advice\\._\n"
-                "🔔 @SignalBharat"
-            ),
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
+    print(f"Job type: {job}")
+    print(f"Token: {'SET' if BOT_TOKEN else 'MISSING!'}")
+
+    if not BOT_TOKEN or len(BOT_TOKEN) < 10:
+        print("ERROR: BOT_TOKEN is missing! Add TELEGRAM_TOKEN in GitHub Secrets.")
         return
 
-    if job_type == "market_open":
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=(
-                "🔔 *MARKET OPEN — SCANNING STARTED*\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📅 `{now_str}`\n"
-                "📊 NSE/BSE: *OPEN* 🟢\n\n"
-                "🎯 AI scanning 10 symbols\\.\\.\\.\n"
-                "📈 NIFTY \\| BANKNIFTY \\| F&O Stocks\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                "⚠️ _Educational only\\. Not SEBI advice\\._\n"
-                "🔔 @SignalBharat"
-            ),
-            parse_mode=ParseMode.MARKDOWN_V2
+    bot = Bot(token=BOT_TOKEN)
+
+    # ── PRE-MARKET ──
+    if job == "pre_market":
+        text = (
+            "⏰ *PRE\\-MARKET ALERT*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 {now_str}\n"
+            "🕘 Market opens in 15 minutes\\!\n\n"
+            "📌 *WATCH LEVELS*\n"
+            "• NIFTY: Support 22,200 \\| Resistance 22,800\n"
+            "• BNKN: Support 48,500 \\| Resistance 49,500\n\n"
+            "🎯 Signals 9:15 AM se shuru honge\\!\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ _Educational only\\. Not SEBI advice\\._\n"
+            "🔔 @SignalBharat"
         )
+        await bot.send_message(chat_id=CHANNEL_ID, text=text,
+                               parse_mode=ParseMode.MARKDOWN_V2)
         return
 
-    if job_type == "market_close":
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=(
-                "🔔 *MARKET CLOSED — EOD*\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📅 `{now_str}`\n"
-                "⏰ NSE Closed at 3:30 PM IST\n\n"
-                "💡 Review signals before tomorrow\\!\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n"
-                "⚠️ _Educational only\\. Not SEBI advice\\._\n"
-                "🔔 @SignalBharat"
-            ),
-            parse_mode=ParseMode.MARKDOWN_V2
+    # ── MARKET OPEN ──
+    if job == "market_open":
+        text = (
+            "🔔 *MARKET OPEN — SCANNING*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 {now_str}\n"
+            "📊 NSE/BSE: *OPEN* 🟢\n\n"
+            "🎯 AI scanning 10 symbols\\.\\.\\.\n"
+            "📈 NIFTY \\| BANKNIFTY \\| F&O\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ _Educational only\\. Not SEBI advice\\._\n"
+            "🔔 @SignalBharat"
         )
+        await bot.send_message(chat_id=CHANNEL_ID, text=text,
+                               parse_mode=ParseMode.MARKDOWN_V2)
         return
 
-    # SCAN JOB
+    # ── MARKET CLOSE ──
+    if job == "market_close":
+        text = (
+            "🔔 *MARKET CLOSED — EOD SUMMARY*\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 {now_str}\n"
+            "⏰ NSE Closed at 3:30 PM IST\n\n"
+            "💡 Kal ke signals ke liye ready raho\\!\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠️ _Educational only\\. Not SEBI advice\\._\n"
+            "🔔 @SignalBharat"
+        )
+        await bot.send_message(chat_id=CHANNEL_ID, text=text,
+                               parse_mode=ParseMode.MARKDOWN_V2)
+        return
+
+    # ── SIGNAL SCAN ──
     if not is_market_open():
-        print("Market closed — skipping scan.")
+        print("Market closed — no scan needed. Exiting.")
         return
 
     print(f"Scanning {len(SYMBOLS)} symbols...")
-    count = 0
+    sent = 0
     for name, ticker in SYMBOLS.items():
-        print(f"  Analyzing {name}...")
+        print(f"Analyzing {name}...")
         result = analyze(name, ticker)
         if result:
             try:
                 await bot.send_message(
                     chat_id=CHANNEL_ID,
-                    text=fmt(result),
+                    text=fmt_signal(result),
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
-                count += 1
-                await asyncio.sleep(2)
+                sent += 1
+                await asyncio.sleep(3)
             except Exception as e:
-                print(f"Send error {name}: {e}")
+                print(f"  Send error {name}: {e}")
 
-    print(f"Done. Sent {count} signals.")
+    print(f"Scan complete. Signals sent: {sent}")
+
+    if sent == 0:
+        print("No strong signals found this scan.")
 
 if __name__ == "__main__":
     asyncio.run(main())
