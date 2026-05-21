@@ -1,8 +1,5 @@
-requests
-yfinance
-pandas
-numpy
-python-telegram-bot==21.6
-schedule
-pytz
-nest_asyncio
+python-telegram-bot==20.7
+yfinance==0.2.37
+pandas==2.1.4
+numpy==1.26.4
+pytz==2024.1
