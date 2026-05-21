@@ -9,7 +9,6 @@ from datetime import datetime
 BOT_TOKEN = "YOUR_BOT_TOKEN"
 CHANNEL_USERNAME = "@stocksignlas"
 
-# Stocks + NIFTY
 STOCKS = [
     "^NSEI",
     "RELIANCE.NS",
@@ -40,7 +39,6 @@ def send_signal(message):
         if response.status_code == 200:
             print("✅ Signal Sent")
             return True
-
         else:
             print(response.text)
             return False
@@ -52,11 +50,13 @@ def send_signal(message):
 def calculate_indicators(stock_symbol):
 
     try:
+
         data = yf.download(
             stock_symbol,
-            period="3mo",
+            period="5d",
             interval="15m",
-            progress=False
+            progress=False,
+            auto_adjust=True
         )
 
         if len(data) < 50:
@@ -73,9 +73,8 @@ def calculate_indicators(stock_symbol):
         data["MACD"] = macd["MACD_12_26_9"]
         data["SIGNAL"] = macd["MACDs_12_26_9"]
 
-        # SMA
+        # Moving Average
         data["SMA20"] = ta.sma(close, length=20)
-        data["SMA50"] = ta.sma(close, length=50)
 
         return data
 
@@ -100,11 +99,11 @@ def generate_signal(stock):
 
     signal_type = None
 
-    # BUY
+    # BUY Signal
     if rsi < 30 and macd > signal and price > sma20:
         signal_type = "BUY"
 
-    # SELL
+    # SELL Signal
     elif rsi > 70 and macd < signal and price < sma20:
         signal_type = "SELL"
 
@@ -113,20 +112,19 @@ def generate_signal(stock):
 
     stock_name = stock.replace(".NS", "")
 
-    # NIFTY OPTION SIGNAL
     option_signal = ""
 
+    # NIFTY OPTION SIGNAL
     if stock == "^NSEI":
 
         stock_name = "NIFTY 50"
 
-        nifty_strike = round(price / 50) * 50
+        strike = round(price / 50) * 50
 
         if signal_type == "BUY":
-            option_signal = f"{nifty_strike} CE"
-
+            option_signal = f"{strike} CE"
         else:
-            option_signal = f"{nifty_strike} PE"
+            option_signal = f"{strike} PE"
 
     target = round(price * 1.03, 2)
     stoploss = round(price * 0.98, 2)
@@ -167,28 +165,32 @@ def format_message(data):
 #NSE #NIFTY #StockMarket
 """
 
+def market_open():
+
+    ist = pytz.timezone("Asia/Kolkata")
+
+    now = datetime.now(ist)
+
+    current_day = now.weekday()
+
+    current_time = now.time()
+
+    market_start = datetime.strptime("09:15", "%H:%M").time()
+    market_end = datetime.strptime("15:30", "%H:%M").time()
+
+    return current_day < 5 and market_start <= current_time <= market_end
+
 def main():
 
     print("🚀 Trading Bot Started")
-
-    ist = pytz.timezone("Asia/Kolkata")
 
     while True:
 
         try:
 
-            now = datetime.now(ist)
+            if market_open():
 
-            current_time = now.time()
-            current_day = now.weekday()
-
-            market_open = current_time >= datetime.strptime("09:15", "%H:%M").time()
-            market_close = current_time <= datetime.strptime("15:30", "%H:%M").time()
-
-            # Monday-Friday only
-            if current_day < 5 and market_open and market_close:
-
-                print(f"\n🔄 Market Open - Scanning at {now.strftime('%H:%M')}")
+                print(f"🔄 Scanning Stocks... {datetime.now()}")
 
                 for stock in STOCKS:
 
@@ -196,9 +198,9 @@ def main():
 
                     if signal:
 
-                        msg = format_message(signal)
+                        message = format_message(signal)
 
-                        send_signal(msg)
+                        send_signal(message)
 
                         print(f"✅ Signal Sent For {stock}")
 
@@ -210,11 +212,14 @@ def main():
             else:
 
                 print("❌ Market Closed")
+
+                # Recheck after 5 min
                 time.sleep(300)
 
         except Exception as e:
 
             print(f"Error: {e}")
+
             time.sleep(60)
 
 if __name__ == "__main__":
