@@ -15,249 +15,213 @@ import nest_asyncio
 nest_asyncio.apply()
 warnings.filterwarnings('ignore')
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ─── CONFIG ───────────────────────────────────────
-# BotFather se mila hua actual token use kiya gaya hai
+# ─── CONFIGURATION ────────────────────────────────
 BOT_TOKEN = "667814057:AAGiL1EB6Go3zbYmicm5tyxKucWdfCxRYCY"
 CHANNEL_ID = -1003967766296
 IST = pytz.timezone('Asia/Kolkata')
 
+# High Volume Liquid Stocks & Indices for Real Accurate Signals
 SYMBOLS = {
     "NIFTY 50": "^NSEI",
     "BANKNIFTY": "^NSEBANK",
-    "FINNIFTY": "^NSEFIN",
     "RELIANCE": "RELIANCE.NS",
     "TCS": "TCS.NS",
     "HDFCBANK": "HDFCBANK.NS",
-    "INFY": "INFY.NS",
     "ICICIBANK": "ICICIBANK.NS",
     "SBIN": "SBIN.NS",
-    "TATAMOTORS": "TATAMOTORS.NS",
-    "ADANIENT": "ADANIENT.NS",
-    "WIPRO": "WIPRO.NS",
-    "ONGC": "ONGC.NS",
-    "BAJFINANCE": "BAJFINANCE.NS",
-    "SUNPHARMA": "SUNPHARMA.NS",
+    "INFY": "INFY.NS",
+    "TATAMOTORS": "TATAMOTORS.NS"
 }
 
-LAST_SIGNALS = {}
+# ─── MATHEMATICAL INDICATORS ──────────────────────
+def calculate_atr(df, period=14):
+    high = df['High']
+    low = df['Low']
+    close = df['Close'].shift(1)
+    
+    tr1 = high - low
+    tr2 = (high - close).abs()
+    tr3 = (low - close).abs()
+    
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    return atr
 
-# ─── INDICATORS ────────────────────────────────────
-def get_rsi(close, period=14):
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
+def calculate_supertrend(df, period=10, multiplier=3):
+    """Generates accurate algorithmic trend signals"""
+    high = df['High']
+    low = df['Low']
+    close = df['Close']
+    
+    atr = calculate_atr(df, period)
+    hl2 = (high + low) / 2
+    
+    final_upperband = hl2 + (multiplier * atr)
+    final_lowerband = hl2 - (multiplier * atr)
+    
+    supertrend = np.zeros(len(df))
+    direction = np.zeros(len(df))
+    
+    for i in range(1, len(df)):
+        if close.iloc[i] > final_upperband.iloc[i-1]:
+            direction[i] = 1
+        elif close.iloc[i] < final_lowerband.iloc[i-1]:
+            direction[i] = -1
+        else:
+            direction[i] = direction[i-1]
+            if direction[i] == 1 and final_lowerband.iloc[i] < final_lowerband.iloc[i-1]:
+                final_lowerband.iloc[i] = final_lowerband.iloc[i-1]
+            if direction[i] == -1 and final_upperband.iloc[i] > final_upperband.iloc[i-1]:
+                final_upperband.iloc[i] = final_upperband.iloc[i-1]
+                
+        if direction[i] == 1:
+            supertrend[i] = final_lowerband.iloc[i]
+        else:
+            supertrend[i] = final_upperband.iloc[i]
+            
+    return pd.Series(supertrend, index=df.index), pd.Series(direction, index=df.index)
 
-def get_macd(close, fast=12, slow=26, signal=9):
-    ema_fast = close.ewm(span=fast, adjust=False).mean()
-    ema_slow = close.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-    return macd_line, signal_line, histogram
-
-def get_ema(close, period):
-    return close.ewm(span=period, adjust=False).mean()
-
-def get_bollinger(close, period=20, std=2):
-    sma = close.rolling(period).mean()
-    sigma = close.rolling(period).std()
-    upper = sma + std * sigma
-    lower = sma - std * sigma
-    return upper, sma, lower
-
-def get_volume_signal(volume, period=20):
-    vol_ma = volume.rolling(period).mean()
-    return volume.iloc[-1] / vol_ma.iloc[-1] if vol_ma.iloc[-1] != 0 else 1
-
-# ─── ANALYSIS ──────────────────────────────────────
-def analyze_symbol(name, ticker):
+# ─── LIVE ALGORITHM ENGINE ────────────────────────
+def generate_real_signal(name, ticker):
     try:
-        df = yf.download(ticker, period="60d", interval="15m", progress=False)
-
-        if df is None or len(df) < 50:
-            return None
-
-        df = df.dropna()
-
-        close = df["Close"]
-        volume = df["Volume"]
-
-        rsi = get_rsi(close)
-        macd, sig, hist = get_macd(close)
-
-        ema9 = get_ema(close, 9)
-        ema21 = get_ema(close, 21)
-        ema50 = get_ema(close, 50)
-        ema200 = get_ema(close, 200)
-
-        bb_up, bb_mid, bb_low = get_bollinger(close)
-        vol_ratio = get_volume_signal(volume)
-
-        cmp = float(close.iloc[-1])
-        rsi_val = float(rsi.iloc[-1])
-        macd_val = float(macd.iloc[-1])
-        sig_val = float(sig.iloc[-1])
-        hist_val = float(hist.iloc[-1])
-        hist_prev = float(hist.iloc[-2])
-
-        ema9_v = float(ema9.iloc[-1])
-        ema21_v = float(ema21.iloc[-1])
-        ema50_v = float(ema50.iloc[-1])
-        ema200_v = float(ema200.iloc[-1])
-
-        bb_up_v = float(bb_up.iloc[-1])
-        bb_low_v = float(bb_low.iloc[-1])
-
-        prev_close = float(close.iloc[-2])
-        chg_pct = ((cmp - prev_close) / prev_close) * 100
-
-        score = 0
-
-        # RSI Filter
-        if rsi_val < 35:
-            score += 2
-        elif rsi_val > 65:
-            score -= 2
-
-        # MACD Filter
-        if macd_val > sig_val and hist_val > hist_prev:
-            score += 2
-        elif macd_val < sig_val and hist_val < hist_prev:
-            score -= 2
-
-        # EMA Moving Averages Filter
-        if ema9_v > ema21_v > ema50_v:
-            score += 2
-        elif ema9_v < ema21_v < ema50_v:
-            score -= 2
-
-        # Long Term Trend (EMA 200) Filter
-        if cmp > ema200_v:
-            score += 1
-        else:
-            score -= 1
-
-        # Bollinger Bands Filter
-        if cmp <= bb_low_v:
-            score += 2
-        elif cmp >= bb_up_v:
-            score -= 2
-
-        # Volume Multiplier
-        if vol_ratio > 1.5:
-            if score > 0:
-                score += 1
-            else:
-                score -= 1
-
-        # Signal Validation Threshold
-        if score >= 3:
-            signal = "BUY"
-        elif score <= -3:
-            signal = "SELL"
-        else:
-            return None
-
-        # Duplicate alert processing filter
-        if LAST_SIGNALS.get(name) == signal:
-            return None
-
-        LAST_SIGNALS[name] = signal
-        confidence = min(95, abs(score) * 15)
+        # Fetching latest 15-minute multi-day candle structured interval data
+        df = yf.download(ticker, period="10d", interval="15m", progress=False)
         
-        # ATR Calculation for dynamic SL/Target
-        atr_val = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
-
+        if df is None or len(df) < 30:
+            logger.warning(f"Insufficient historical data stream for {name}")
+            return None
+            
+        df = df.dropna()
+        
+        # Calculate moving averages
+        df['EMA_Fast'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['EMA_Slow'] = df['Close'].ewm(span=21, adjust=False).mean()
+        
+        # Calculate Supertrend
+        df['Supertrend'], df['Direction'] = calculate_supertrend(df, period=10, multiplier=3)
+        
+        # Extract last two candles for absolute mathematical confirmation
+        current_candle = df.iloc[-1]
+        prev_candle = df.iloc[-2]
+        
+        cmp = float(current_candle['Close'])
+        prev_close = float(prev_candle['Close'])
+        pct_change = ((cmp - prev_close) / prev_close) * 100
+        
+        signal = None
+        
+        # STRATEGY: EMA Crossover + Supertrend Alignment Matrix
+        # Condition BUY: Fast EMA crosses above Slow EMA AND Supertrend turns bullish
+        if (current_candle['EMA_Fast'] > current_candle['EMA_Slow']) and (current_candle['Direction'] == 1):
+            if (prev_candle['EMA_Fast'] <= prev_candle['EMA_Slow']) or (prev_candle['Direction'] == -1):
+                signal = "BUY"
+                
+        # Condition SELL: Fast EMA crosses below Slow EMA AND Supertrend turns bearish
+        elif (current_candle['EMA_Fast'] < current_candle['EMA_Slow']) and (current_candle['Direction'] == -1):
+            if (prev_candle['EMA_Fast'] >= prev_candle['EMA_Slow']) or (prev_candle['Direction'] == 1):
+                signal = "SELL"
+                
+        if not signal:
+            return None
+            
+        # Target / Stoploss Calculations using current volatility ATR
+        atr_val = calculate_atr(df).iloc[-1]
+        
         if signal == "BUY":
-            sl = cmp - atr_val * 1.5
-            t1 = cmp + atr_val * 2
-            t2 = cmp + atr_val * 3
-            trend = "BULLISH 🟢"
+            sl = cmp - (atr_val * 1.5)
+            t1 = cmp + (atr_val * 1.5)
+            t2 = cmp + (atr_val * 3.0)
+            action_emoji = "🟢 BULLISH BREAKOUT"
         else:
-            sl = cmp + atr_val * 1.5
-            t1 = cmp - atr_val * 2
-            t2 = cmp - atr_val * 3
-            trend = "BEARISH 🔴"
-
-        rr = abs(t1 - cmp) / abs(sl - cmp) if abs(sl - cmp) != 0 else 1
-
+            sl = cmp + (atr_val * 1.5)
+            t1 = cmp - (atr_val * 1.5)
+            t2 = cmp - (atr_val * 3.0)
+            action_emoji = "🔴 BEARISH BREAKDOWN"
+            
+        rr_ratio = abs(t1 - cmp) / abs(sl - cmp) if abs(sl - cmp) != 0 else 1.0
+        
         return {
             "name": name,
             "signal": signal,
             "cmp": round(cmp, 2),
-            "chg_pct": round(chg_pct, 2),
+            "pct": round(pct_change, 2),
             "sl": round(sl, 2),
             "t1": round(t1, 2),
             "t2": round(t2, 2),
-            "rr": round(rr, 2),
-            "confidence": confidence,
-            "trend": trend,
-            "rsi": round(rsi_val, 1),
-            "vol_ratio": round(vol_ratio, 2),
+            "rr": round(rr_ratio, 2),
+            "trend": action_emoji,
+            "time": datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
         }
-
+        
     except Exception as e:
-        logger.error(f"{name} analysis execution failed: {e}")
+        logger.error(f"Failed parsing mathematical array matrix for {name}: {e}")
         return None
 
-# ─── TELEGRAM ──────────────────────────────────────
-async def send_message(bot, text):
-    try:
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=text,
-            parse_mode=ParseMode.HTML
-        )
-    except Exception as e:
-        logger.error(f"Telegram communication layer failed: {e}")
+# ─── TELEGRAM MESSAGING PROTOCOL ──────────────────
+async def broadcast_signal(bot, data):
+    emoji = "🚀" if data["signal"] == "BUY" else "💥"
+    
+    message = f"""
+{emoji} <b>ALGORITHMIC {data['signal']} SIGNAL</b>
 
-def format_signal(s):
-    emoji = "🟢" if s["signal"] == "BUY" else "🔴"
+📌 <b>Asset:</b> {data['name']}
+💰 <b>Execution Price (CMP):</b> ₹{data['cmp']} ({data['pct']}%)
+📊 <b>Market Structure:</b> {data['trend']}
 
-    return f"""
-{emoji} <b>{s['signal']} SIGNAL</b>
+━━━━━━━━━━━━━━━━━━
+🛑 <b>Strict Stoploss:</b> ₹{data['sl']}
+🎯 <b>Target 1 (Conservative):</b> ₹{data['t1']}
+🎯 <b>Target 2 (Aggressive):</b> ₹{data['t2']}
+⚖️ <b>Risk-Reward Ratio:</b> 1:{data['rr']}
 
-📌 {s['name']}
-💰 CMP: ₹{s['cmp']} ({s['chg_pct']}%)
-🎯 {s['trend']}
-
-━━━━━━━━━━━━━━
-🛑 SL: ₹{s['sl']}
-🎯 T1: ₹{s['t1']}
-🎯 T2: ₹{s['t2']}
-⚖️ RR: 1:{s['rr']}
-
-📊 RSI: {s['rsi']}
-📦 Volume: {s['vol_ratio']}x
-⭐ Confidence: {s['confidence']}%
-
-⚠️ Educational Only
+🕒 <b>Timestamp (IST):</b> {data['time']}
+⚠️ <i>System Generated Signal. For Educational Studies Only.</i>
 """
+    try:
+        await bot.send_message(chat_id=CHANNEL_ID, text=message, parse_mode=ParseMode.HTML)
+        logger.info(f"Signal successfully transmitted for {data['name']}")
+    except Exception as e:
+        logger.error(f"Transmission loss on Telegram API: {e}")
 
-# ─── JOB ──────────────────────────────────────
-async def job():
+# ─── MAIN ENGINE LIFECYCLE ────────────────────────
+async def execution_cycle():
+    # NSE Market Time validation constraint check
+    now = datetime.now(IST)
+    
+    # Validation Check: Monday=0, Friday=4. Execution between 09:15 to 15:30 IST
+    if now.weekday() > 4:
+        logger.info("Market is closed (Weekend). Skipping scanner runtime.")
+        return
+        
+    market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
+    market_end = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    
+    if not (market_start <= now <= market_end):
+        logger.info("Outside official Indian Market operating hours. Skipping scan.")
+        return
+
+    logger.info("Initiating Live Market Data Array Scan...")
     bot = Bot(token=BOT_TOKEN)
-
+    
     for name, ticker in SYMBOLS.items():
-        result = analyze_symbol(name, ticker)
-        if result:
-            await send_message(bot, format_signal(result))
-            await asyncio.sleep(3)
+        signal_data = generate_real_signal(name, ticker)
+        if signal_data:
+            await broadcast_signal(bot, signal_data)
+            await asyncio.sleep(2)  # Avoid rate limit thresholds
 
-# ─── RUNNER ──────────────────────────────────────
-def run(coro):
-    asyncio.run(coro)
+def run_async_loop(coroutine):
+    asyncio.run(coroutine)
 
-schedule.every(30).minutes.do(lambda: run(job()))
+# Real-time scan engine loop interval - Checks every 5 minutes for new candle closed data
+schedule.every(5).minutes.do(lambda: run_async_loop(execution_cycle()))
 
 if __name__ == "__main__":
-    logger.info("Market Analytics engine initiated successfully.")
-
+    logger.info("HFT Real-Time Signal Bot active and listening to standard input streams...")
+    
+    # Script runtime initialization loop
     while True:
         schedule.run_pending()
-        time.sleep(10)
+        time.sleep(1)
