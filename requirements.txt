@@ -1,5 +1,8 @@
 requests
 yfinance
 pandas
-pandas_ta
+numpy
+python-telegram-bot==21.6
+schedule
 pytz
+nest_asyncio
