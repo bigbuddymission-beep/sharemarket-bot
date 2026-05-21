@@ -19,26 +19,27 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ─── CONFIG ───────────────────────────────────────
-BOT_TOKEN  = 667814057:AAGiL1EB6Go3zbYmicm5tyxKucWdfCxRYCY
+# BotFather se mila hua actual token use kiya gaya hai
+BOT_TOKEN = "667814057:AAGiL1EB6Go3zbYmicm5tyxKucWdfCxRYCY"
 CHANNEL_ID = -1003967766296
-IST        = pytz.timezone('Asia/Kolkata')
+IST = pytz.timezone('Asia/Kolkata')
 
 SYMBOLS = {
-    "NIFTY 50":   "^NSEI",
-    "BANKNIFTY":  "^NSEBANK",
-    "FINNIFTY":   "^NSEFIN",
-    "RELIANCE":   "RELIANCE.NS",
-    "TCS":        "TCS.NS",
-    "HDFCBANK":   "HDFCBANK.NS",
-    "INFY":       "INFY.NS",
-    "ICICIBANK":  "ICICIBANK.NS",
-    "SBIN":       "SBIN.NS",
+    "NIFTY 50": "^NSEI",
+    "BANKNIFTY": "^NSEBANK",
+    "FINNIFTY": "^NSEFIN",
+    "RELIANCE": "RELIANCE.NS",
+    "TCS": "TCS.NS",
+    "HDFCBANK": "HDFCBANK.NS",
+    "INFY": "INFY.NS",
+    "ICICIBANK": "ICICIBANK.NS",
+    "SBIN": "SBIN.NS",
     "TATAMOTORS": "TATAMOTORS.NS",
-    "ADANIENT":   "ADANIENT.NS",
-    "WIPRO":      "WIPRO.NS",
-    "ONGC":       "ONGC.NS",
+    "ADANIENT": "ADANIENT.NS",
+    "WIPRO": "WIPRO.NS",
+    "ONGC": "ONGC.NS",
     "BAJFINANCE": "BAJFINANCE.NS",
-    "SUNPHARMA":  "SUNPHARMA.NS",
+    "SUNPHARMA": "SUNPHARMA.NS",
 }
 
 LAST_SIGNALS = {}
@@ -71,12 +72,13 @@ def get_bollinger(close, period=20, std=2):
 
 def get_volume_signal(volume, period=20):
     vol_ma = volume.rolling(period).mean()
-    return volume.iloc[-1] / vol_ma.iloc[-1]
+    return volume.iloc[-1] / vol_ma.iloc[-1] if vol_ma.iloc[-1] != 0 else 1
 
 # ─── ANALYSIS ──────────────────────────────────────
 def analyze_symbol(name, ticker):
     try:
         df = yf.download(ticker, period="60d", interval="15m", progress=False)
+
         if df is None or len(df) < 50:
             return None
 
@@ -116,40 +118,44 @@ def analyze_symbol(name, ticker):
 
         score = 0
 
-        # RSI
+        # RSI Filter
         if rsi_val < 35:
             score += 2
         elif rsi_val > 65:
             score -= 2
 
-        # MACD
+        # MACD Filter
         if macd_val > sig_val and hist_val > hist_prev:
             score += 2
         elif macd_val < sig_val and hist_val < hist_prev:
             score -= 2
 
-        # EMA
+        # EMA Moving Averages Filter
         if ema9_v > ema21_v > ema50_v:
             score += 2
         elif ema9_v < ema21_v < ema50_v:
             score -= 2
 
-        # EMA200 filter
+        # Long Term Trend (EMA 200) Filter
         if cmp > ema200_v:
             score += 1
         else:
             score -= 1
 
-        # Bollinger
+        # Bollinger Bands Filter
         if cmp <= bb_low_v:
             score += 2
         elif cmp >= bb_up_v:
             score -= 2
 
-        # Volume
+        # Volume Multiplier
         if vol_ratio > 1.5:
-            score += 1 if score > 0 else -1
+            if score > 0:
+                score += 1
+            else:
+                score -= 1
 
+        # Signal Validation Threshold
         if score >= 3:
             signal = "BUY"
         elif score <= -3:
@@ -157,27 +163,28 @@ def analyze_symbol(name, ticker):
         else:
             return None
 
+        # Duplicate alert processing filter
         if LAST_SIGNALS.get(name) == signal:
             return None
 
         LAST_SIGNALS[name] = signal
-
         confidence = min(95, abs(score) * 15)
-
-        atr = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
+        
+        # ATR Calculation for dynamic SL/Target
+        atr_val = float((df["High"] - df["Low"]).rolling(14).mean().iloc[-1])
 
         if signal == "BUY":
-            sl = cmp - atr * 1.5
-            t1 = cmp + atr * 2
-            t2 = cmp + atr * 3
+            sl = cmp - atr_val * 1.5
+            t1 = cmp + atr_val * 2
+            t2 = cmp + atr_val * 3
             trend = "BULLISH 🟢"
         else:
-            sl = cmp + atr * 1.5
-            t1 = cmp - atr * 2
-            t2 = cmp - atr * 3
+            sl = cmp + atr_val * 1.5
+            t1 = cmp - atr_val * 2
+            t2 = cmp - atr_val * 3
             trend = "BEARISH 🔴"
 
-        rr = abs(t1 - cmp) / abs(sl - cmp)
+        rr = abs(t1 - cmp) / abs(sl - cmp) if abs(sl - cmp) != 0 else 1
 
         return {
             "name": name,
@@ -195,7 +202,7 @@ def analyze_symbol(name, ticker):
         }
 
     except Exception as e:
-        logger.error(f"{name} error: {e}")
+        logger.error(f"{name} analysis execution failed: {e}")
         return None
 
 # ─── TELEGRAM ──────────────────────────────────────
@@ -207,7 +214,7 @@ async def send_message(bot, text):
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        logger.error(f"Telegram error: {e}")
+        logger.error(f"Telegram communication layer failed: {e}")
 
 def format_signal(s):
     emoji = "🟢" if s["signal"] == "BUY" else "🔴"
@@ -215,7 +222,7 @@ def format_signal(s):
     return f"""
 {emoji} <b>{s['signal']} SIGNAL</b>
 
-📌 <b>{s['name']}</b>
+📌 {s['name']}
 💰 CMP: ₹{s['cmp']} ({s['chg_pct']}%)
 🎯 {s['trend']}
 
@@ -232,8 +239,8 @@ def format_signal(s):
 ⚠️ Educational Only
 """
 
-# ─── SCAN ──────────────────────────────────────────
-async def job_scan():
+# ─── JOB ──────────────────────────────────────
+async def job():
     bot = Bot(token=BOT_TOKEN)
 
     for name, ticker in SYMBOLS.items():
@@ -242,18 +249,14 @@ async def job_scan():
             await send_message(bot, format_signal(result))
             await asyncio.sleep(3)
 
-# ─── RUNNER ────────────────────────────────────────
-def run_async(coro):
+# ─── RUNNER ──────────────────────────────────────
+def run(coro):
     asyncio.run(coro)
 
-def setup():
-    schedule.every(30).minutes.do(lambda: run_async(job_scan()))
-    logger.info("Scheduler started")
+schedule.every(30).minutes.do(lambda: run(job()))
 
 if __name__ == "__main__":
-    logger.info("Bot starting...")
-
-    setup()
+    logger.info("Market Analytics engine initiated successfully.")
 
     while True:
         schedule.run_pending()
