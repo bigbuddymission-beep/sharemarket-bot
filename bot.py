@@ -5,6 +5,9 @@ import numpy as np
 from datetime import datetime
 import pytz
 import os
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from telegram import Bot
 from telegram.constants import ParseMode
 
@@ -14,17 +17,9 @@ CHANNEL_ID = int(os.environ.get("CHANNEL_ID") or "-1003967766296")
 IST        = pytz.timezone('Asia/Kolkata')
 
 NSE_HOLIDAYS_2026 = [
-    "2026-01-26",
-    "2026-03-25",
-    "2026-04-02",
-    "2026-04-14",
-    "2026-05-01",
-    "2026-08-15",
-    "2026-10-02",
-    "2026-10-20",
-    "2026-11-04",
-    "2026-11-25",
-    "2026-12-25",
+    "2026-01-26", "2026-03-25", "2026-04-02", "2026-04-14",
+    "2026-05-01", "2026-08-15", "2026-10-02", "2026-10-20",
+    "2026-11-04", "2026-11-25", "2026-12-25",
 ]
 
 SYMBOLS = {
@@ -39,6 +34,29 @@ SYMBOLS = {
     "TATAMOTORS": "TATAMOTORS.NS",
     "ONGC":       "ONGC.NS",
 }
+
+# ── YAHOO FINANCE SESSION FIX ───────────────────────
+def make_session():
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+    })
+    retry = Retry(total=3, backoff_factor=1,
+                  status_forcelist=[429, 500, 502, 503, 504])
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+YF_SESSION = make_session()
 
 # ── MARKET CHECK ────────────────────────────────────
 def is_market_open():
@@ -58,7 +76,7 @@ def is_market_open():
     cl = now.replace(hour=15, minute=30, second=0, microsecond=0)
 
     if not (op <= now <= cl):
-        print(f"Outside market hours (9:15 AM - 3:30 PM IST). Current: {now.strftime('%I:%M %p')}")
+        print(f"Outside market hours. Current: {now.strftime('%I:%M %p')}")
         return False
 
     return True
@@ -92,10 +110,33 @@ def get_ema(close, p):
 # ── ANALYSIS ────────────────────────────────────────
 def analyze(name, ticker):
     try:
-        df = yf.download(ticker, period="30d", interval="15m",
-                         progress=False, auto_adjust=True)
+        # Session ke saath download karo
+        df = yf.download(
+            ticker,
+            period="30d",
+            interval="15m",
+            progress=False,
+            auto_adjust=True,
+            session=YF_SESSION
+        )
+
+        # Retry without session if still fails
         if df is None or len(df) < 40:
-            print(f"  {name}: Not enough data")
+            print(f"  {name}: Retrying with fresh session...")
+            import time
+            time.sleep(2)
+            fresh = make_session()
+            df = yf.download(
+                ticker,
+                period="30d",
+                interval="15m",
+                progress=False,
+                auto_adjust=True,
+                session=fresh
+            )
+
+        if df is None or len(df) < 40:
+            print(f"  {name}: Not enough data even after retry")
             return None
 
         close  = df["Close"].squeeze()
@@ -183,9 +224,13 @@ def fmt_signal(s):
     now = datetime.now(IST).strftime("%I:%M %p IST")
     mk  = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
     ek  = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
-    rsi_tag = "🔥 Oversold" if s["rsi"] < 35 else "❄️ Overbought" if s["rsi"] > 65 else "✅ Normal"
+    rsi_tag = ("🔥 Oversold" if s["rsi"] < 35
+               else "❄️ Overbought" if s["rsi"] > 65
+               else "✅ Normal")
 
-    chg_escaped = chg.replace("+", "\\+").replace("-", "\\-").replace("%", "\\%")
+    chg_escaped = (chg.replace("+", "\\+")
+                      .replace("-", "\\-")
+                      .replace("%", "\\%"))
 
     return (
         f"{e} {hd}\n"
@@ -223,7 +268,7 @@ async def main():
     print(f"Token: {'SET' if BOT_TOKEN else 'MISSING!'}")
 
     if not BOT_TOKEN or len(BOT_TOKEN) < 10:
-        print("ERROR: BOT_TOKEN missing! Add TELEGRAM_TOKEN in GitHub Secrets.")
+        print("ERROR: BOT_TOKEN missing!")
         return
 
     bot = Bot(token=BOT_TOKEN)
@@ -301,9 +346,9 @@ async def main():
                 await asyncio.sleep(3)
             except Exception as e:
                 print(f"  Send error {name}: {e}")
+        await asyncio.sleep(1)  # Rate limit avoid karne ke liye
 
     print(f"Scan complete. Signals sent: {sent}")
-
     if sent == 0:
         print("No strong signals found this scan.")
 
