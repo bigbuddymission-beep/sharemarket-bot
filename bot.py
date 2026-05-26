@@ -10,8 +10,22 @@ from telegram.constants import ParseMode
 
 # ── CONFIG ─────────────────────────────────────────
 BOT_TOKEN  = os.environ.get("TELEGRAM_TOKEN") or "667814057:AAGiL1EB6Go3zbYmicm5tyxKucWdfCxRYCY"
-CHANNEL_ID = -1003967766296
+CHANNEL_ID = int(os.environ.get("CHANNEL_ID") or "-1003967766296")
 IST        = pytz.timezone('Asia/Kolkata')
+
+NSE_HOLIDAYS_2026 = [
+    "2026-01-26",
+    "2026-03-25",
+    "2026-04-02",
+    "2026-04-14",
+    "2026-05-01",
+    "2026-08-15",
+    "2026-10-02",
+    "2026-10-20",
+    "2026-11-04",
+    "2026-11-25",
+    "2026-12-25",
+]
 
 SYMBOLS = {
     "NIFTY 50":   "^NSEI",
@@ -26,29 +40,38 @@ SYMBOLS = {
     "ONGC":       "ONGC.NS",
 }
 
-# ── MARKET CHECK — SABSE PEHLE ─────────────────────
+# ── MARKET CHECK ────────────────────────────────────
 def is_market_open():
-    now = datetime.now(IST)
+    now       = datetime.now(IST)
+    today_str = now.strftime("%Y-%m-%d")
     print(f"Current IST time: {now.strftime('%A %d %b %Y %I:%M %p IST')}")
+
     if now.weekday() >= 5:
         print("Weekend — market closed.")
         return False
+
+    if today_str in NSE_HOLIDAYS_2026:
+        print(f"NSE Holiday ({today_str}) — market closed.")
+        return False
+
     op = now.replace(hour=9,  minute=15, second=0, microsecond=0)
     cl = now.replace(hour=15, minute=30, second=0, microsecond=0)
+
     if not (op <= now <= cl):
         print(f"Outside market hours (9:15 AM - 3:30 PM IST). Current: {now.strftime('%I:%M %p')}")
         return False
+
     return True
 
 def get_job_type():
     now = datetime.now(IST)
     h, m = now.hour, now.minute
-    if h == 9 and m < 16:   return "pre_market"
-    if h == 9 and 16 <= m < 20: return "market_open"
-    if h == 15 and m >= 30: return "market_close"
+    if h == 9 and m < 16:        return "pre_market"
+    if h == 9 and 16 <= m < 20:  return "market_open"
+    if h == 15 and m >= 30:      return "market_close"
     return "scan"
 
-# ── INDICATORS ─────────────────────────────────────
+# ── INDICATORS ──────────────────────────────────────
 def get_rsi(close, period=14):
     delta = close.diff()
     gain  = delta.clip(lower=0).rolling(period).mean()
@@ -66,7 +89,7 @@ def get_macd(close):
 def get_ema(close, p):
     return close.ewm(span=p, adjust=False).mean()
 
-# ── ANALYSIS ───────────────────────────────────────
+# ── ANALYSIS ────────────────────────────────────────
 def analyze(name, ticker):
     try:
         df = yf.download(ticker, period="30d", interval="15m",
@@ -144,14 +167,14 @@ def analyze(name, ticker):
 
         return dict(name=name, signal=signal, cmp=cmp, chg=chg,
                     entry=entry, sl=sl, t1=t1, t2=t2, t3=t3,
-                    rr=rr, rsi=round(rsi,1), conf=conf,
+                    rr=rr, rsi=round(rsi, 1), conf=conf,
                     vol=vol_ratio, macd_bull=macd_v > sig_v,
                     ema_bull=ema9_v > ema21_v)
     except Exception as e:
         print(f"  Error {name}: {e}")
         return None
 
-# ── MESSAGE FORMAT ─────────────────────────────────
+# ── MESSAGE FORMAT ───────────────────────────────────
 def fmt_signal(s):
     e   = "🟢" if s["signal"] == "BUY" else "🔴"
     hd  = "📈 *BUY SIGNAL*" if s["signal"] == "BUY" else "📉 *SELL SIGNAL*"
@@ -160,13 +183,15 @@ def fmt_signal(s):
     now = datetime.now(IST).strftime("%I:%M %p IST")
     mk  = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
     ek  = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
-    rsi_tag = "🔥 Oversold" if s["rsi"]<35 else "❄️ Overbought" if s["rsi"]>65 else "✅ Normal"
+    rsi_tag = "🔥 Oversold" if s["rsi"] < 35 else "❄️ Overbought" if s["rsi"] > 65 else "✅ Normal"
+
+    chg_escaped = chg.replace("+", "\\+").replace("-", "\\-").replace("%", "\\%")
 
     return (
         f"{e} {hd}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📌 *{s['name']}*\n"
-        f"💰 CMP: ₹{s['cmp']} \\({chg}\\)\n"
+        f"💰 CMP: ₹{s['cmp']} \\({chg_escaped}\\)\n"
         f"🕐 Time: {now}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 *TRADE SETUP*\n"
@@ -181,14 +206,14 @@ def fmt_signal(s):
         f"• RSI:    {s['rsi']} \\— {rsi_tag}\n"
         f"• MACD:   {mk}\n"
         f"• EMA:    {ek}\n"
-        f"• Volume: {s['vol']}x {'🚀' if s['vol']>2 else '📊'}\n"
+        f"• Volume: {s['vol']}x {'🚀' if s['vol'] > 2 else '📊'}\n"
         f"• Confidence: {st} {s['conf']}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ _Educational only\\. Not SEBI advice\\._\n"
         f"🔔 @SignalBharat"
     )
 
-# ── MAIN ───────────────────────────────────────────
+# ── MAIN ────────────────────────────────────────────
 async def main():
     now     = datetime.now(IST)
     job     = get_job_type()
@@ -198,7 +223,7 @@ async def main():
     print(f"Token: {'SET' if BOT_TOKEN else 'MISSING!'}")
 
     if not BOT_TOKEN or len(BOT_TOKEN) < 10:
-        print("ERROR: BOT_TOKEN is missing! Add TELEGRAM_TOKEN in GitHub Secrets.")
+        print("ERROR: BOT_TOKEN missing! Add TELEGRAM_TOKEN in GitHub Secrets.")
         return
 
     bot = Bot(token=BOT_TOKEN)
