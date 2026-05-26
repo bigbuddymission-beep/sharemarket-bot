@@ -5,6 +5,7 @@ import numpy as np
 from datetime import datetime
 import pytz
 import os
+import time
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -31,9 +32,17 @@ SYMBOLS = {
     "INFY":       "INFY.NS",
     "ICICIBANK":  "ICICIBANK.NS",
     "SBIN":       "SBIN.NS",
-    "TATAMOTORS": "TATAMOTORS.NS",
+    "TATAMOTORS": "TATAMOTORS.BO",   # ← .BO fix
     "ONGC":       "ONGC.NS",
 }
+
+# ── MARKDOWNV2 ESCAPE — SARE SPECIAL CHARS ─────────
+def esc(text):
+    special = r'\_*[]()~`>#+-=|{}.!'
+    result = str(text)
+    for ch in special:
+        result = result.replace(ch, f'\\{ch}')
+    return result
 
 # ── YAHOO FINANCE SESSION FIX ───────────────────────
 def make_session():
@@ -44,19 +53,17 @@ def make_session():
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
         ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.5",
         "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
+        "Connection":      "keep-alive",
     })
-    retry = Retry(total=3, backoff_factor=1,
+    retry = Retry(total=3, backoff_factor=2,
                   status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount("https://", adapter)
-    session.mount("http://", adapter)
+    session.mount("http://",  adapter)
     return session
-
-YF_SESSION = make_session()
 
 # ── MARKET CHECK ────────────────────────────────────
 def is_market_open():
@@ -82,10 +89,10 @@ def is_market_open():
     return True
 
 def get_job_type():
-    now = datetime.now(IST)
+    now  = datetime.now(IST)
     h, m = now.hour, now.minute
-    if h == 9 and m < 16:        return "pre_market"
-    if h == 9 and 16 <= m < 20:  return "market_open"
+    if h == 9  and m < 16:       return "pre_market"
+    if h == 9  and 16 <= m < 20: return "market_open"
     if h == 15 and m >= 30:      return "market_close"
     return "scan"
 
@@ -110,33 +117,19 @@ def get_ema(close, p):
 # ── ANALYSIS ────────────────────────────────────────
 def analyze(name, ticker):
     try:
-        # Session ke saath download karo
-        df = yf.download(
-            ticker,
-            period="30d",
-            interval="15m",
-            progress=False,
-            auto_adjust=True,
-            session=YF_SESSION
-        )
-
-        # Retry without session if still fails
-        if df is None or len(df) < 40:
-            print(f"  {name}: Retrying with fresh session...")
-            import time
-            time.sleep(2)
-            fresh = make_session()
-            df = yf.download(
-                ticker,
-                period="30d",
-                interval="15m",
-                progress=False,
-                auto_adjust=True,
-                session=fresh
-            )
+        sess = make_session()
+        df   = yf.download(ticker, period="30d", interval="15m",
+                           progress=False, auto_adjust=True, session=sess)
 
         if df is None or len(df) < 40:
-            print(f"  {name}: Not enough data even after retry")
+            print(f"  {name}: Retrying...")
+            time.sleep(3)
+            sess2 = make_session()
+            df    = yf.download(ticker, period="30d", interval="15m",
+                                progress=False, auto_adjust=True, session=sess2)
+
+        if df is None or len(df) < 40:
+            print(f"  {name}: Not enough data")
             return None
 
         close  = df["Close"].squeeze()
@@ -163,25 +156,28 @@ def analyze(name, ticker):
         vol_ratio = round(vol_now / (vol_avg + 1), 2)
         chg       = round(((cmp - prev) / prev) * 100, 2)
 
+        # ── SCORING ──
         score = 0
-        if rsi < 35:            score += 3
-        elif rsi < 45:          score += 1
-        elif rsi > 65:          score -= 3
-        elif rsi > 55:          score -= 1
 
-        if macd_v > sig_v and hist > hist_prev:   score += 2
-        elif macd_v < sig_v and hist < hist_prev: score -= 2
+        if rsi < 35:         score += 3
+        elif rsi < 45:       score += 1
+        elif rsi > 65:       score -= 3
+        elif rsi > 55:       score -= 1
 
-        if ema9_v > ema21_v > ema50_v:   score += 2
-        elif ema9_v < ema21_v < ema50_v: score -= 2
-        elif cmp > ema21_v:              score += 1
-        else:                            score -= 1
+        if macd_v > sig_v and hist > hist_prev:    score += 2
+        elif macd_v < sig_v and hist < hist_prev:  score -= 2
+
+        if ema9_v > ema21_v > ema50_v:    score += 2
+        elif ema9_v < ema21_v < ema50_v:  score -= 2
+        elif cmp > ema21_v:               score += 1
+        else:                             score -= 1
 
         if vol_ratio > 1.5:
             score += 1 if score > 0 else -1
 
-        if score >= 4:    signal = "BUY"
-        elif score <= -4: signal = "SELL"
+        # ← Score 3 kiya 4 se (zyada signals)
+        if score >= 3:    signal = "BUY"
+        elif score <= -3: signal = "SELL"
         else:
             print(f"  {name}: Score {score} — no strong signal")
             return None
@@ -211,48 +207,60 @@ def analyze(name, ticker):
                     rr=rr, rsi=round(rsi, 1), conf=conf,
                     vol=vol_ratio, macd_bull=macd_v > sig_v,
                     ema_bull=ema9_v > ema21_v)
+
     except Exception as e:
         print(f"  Error {name}: {e}")
         return None
 
-# ── MESSAGE FORMAT ───────────────────────────────────
+# ── MESSAGE FORMAT — FULLY ESCAPED ──────────────────
 def fmt_signal(s):
-    e   = "🟢" if s["signal"] == "BUY" else "🔴"
-    hd  = "📈 *BUY SIGNAL*" if s["signal"] == "BUY" else "📉 *SELL SIGNAL*"
-    chg = f"+{s['chg']}%" if s["chg"] >= 0 else f"{s['chg']}%"
-    st  = "⭐" * min(5, max(1, s["conf"] // 20))
-    now = datetime.now(IST).strftime("%I:%M %p IST")
-    mk  = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
-    ek  = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
-    rsi_tag = ("🔥 Oversold" if s["rsi"] < 35
+    arrow   = "🟢" if s["signal"] == "BUY" else "🔴"
+    header  = "📈 *BUY SIGNAL*" if s["signal"] == "BUY" else "📉 *SELL SIGNAL*"
+    chg_str = f"+{s['chg']}%" if s["chg"] >= 0 else f"{s['chg']}%"
+    stars   = "⭐" * min(5, max(1, s["conf"] // 20))
+    now_str = datetime.now(IST).strftime("%I:%M %p IST")
+    mk      = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
+    ek      = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
+    rsi_tag = ("🔥 Oversold"   if s["rsi"] < 35
                else "❄️ Overbought" if s["rsi"] > 65
                else "✅ Normal")
 
-    chg_escaped = (chg.replace("+", "\\+")
-                      .replace("-", "\\-")
-                      .replace("%", "\\%"))
+    # Sab values esc() se pass karo
+    name    = esc(s["name"])
+    cmp     = esc(s["cmp"])
+    chg     = esc(chg_str)
+    entry   = esc(s["entry"])
+    sl      = esc(s["sl"])
+    t1      = esc(s["t1"])
+    t2      = esc(s["t2"])
+    t3      = esc(s["t3"])
+    rr      = esc(s["rr"])
+    rsi     = esc(s["rsi"])
+    vol     = esc(s["vol"])
+    conf    = esc(s["conf"])
+    now_e   = esc(now_str)
 
     return (
-        f"{e} {hd}\n"
+        f"{arrow} {header}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 *{s['name']}*\n"
-        f"💰 CMP: ₹{s['cmp']} \\({chg_escaped}\\)\n"
-        f"🕐 Time: {now}\n"
+        f"📌 *{name}*\n"
+        f"💰 CMP: ₹{cmp} \\({chg}\\)\n"
+        f"🕐 Time: {now_e}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📊 *TRADE SETUP*\n"
-        f"▶️ Entry:     ₹{s['entry']}\n"
-        f"🛑 Stop Loss: ₹{s['sl']}\n"
-        f"🎯 Target 1:  ₹{s['t1']}\n"
-        f"🎯 Target 2:  ₹{s['t2']}\n"
-        f"🎯 Target 3:  ₹{s['t3']}\n"
-        f"⚖️ R:R Ratio: 1:{s['rr']}\n"
+        f"▶️ Entry:     ₹{entry}\n"
+        f"🛑 Stop Loss: ₹{sl}\n"
+        f"🎯 Target 1:  ₹{t1}\n"
+        f"🎯 Target 2:  ₹{t2}\n"
+        f"🎯 Target 3:  ₹{t3}\n"
+        f"⚖️ R:R Ratio: 1:{rr}\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📐 *INDICATORS*\n"
-        f"• RSI:    {s['rsi']} \\— {rsi_tag}\n"
-        f"• MACD:   {mk}\n"
-        f"• EMA:    {ek}\n"
-        f"• Volume: {s['vol']}x {'🚀' if s['vol'] > 2 else '📊'}\n"
-        f"• Confidence: {st} {s['conf']}%\n"
+        f"• RSI: {rsi} — {rsi_tag}\n"
+        f"• MACD: {mk}\n"
+        f"• EMA: {ek}\n"
+        f"• Volume: {vol}x {'🚀' if s['vol'] > 2 else '📊'}\n"
+        f"• Confidence: {stars} {conf}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚠️ _Educational only\\. Not SEBI advice\\._\n"
         f"🔔 @SignalBharat"
@@ -262,7 +270,7 @@ def fmt_signal(s):
 async def main():
     now     = datetime.now(IST)
     job     = get_job_type()
-    now_str = now.strftime("%d %b %Y %I:%M %p IST")
+    now_str = esc(now.strftime("%d %b %Y %I:%M %p IST"))
 
     print(f"Job type: {job}")
     print(f"Token: {'SET' if BOT_TOKEN else 'MISSING!'}")
@@ -332,6 +340,7 @@ async def main():
 
     print(f"Scanning {len(SYMBOLS)} symbols...")
     sent = 0
+
     for name, ticker in SYMBOLS.items():
         print(f"Analyzing {name}...")
         result = analyze(name, ticker)
@@ -346,7 +355,7 @@ async def main():
                 await asyncio.sleep(3)
             except Exception as e:
                 print(f"  Send error {name}: {e}")
-        await asyncio.sleep(1)  # Rate limit avoid karne ke liye
+        await asyncio.sleep(1)
 
     print(f"Scan complete. Signals sent: {sent}")
     if sent == 0:
