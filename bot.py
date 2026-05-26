@@ -23,19 +23,17 @@ NSE_HOLIDAYS_2026 = [
     "2026-11-04", "2026-11-25", "2026-12-25",
 ]
 
-# ── STOCK SYMBOLS ───────────────────────────────────
 STOCK_SYMBOLS = {
-    "RELIANCE":   "RELIANCE.NS",
-    "TCS":        "TCS.NS",
-    "HDFCBANK":   "HDFCBANK.NS",
-    "INFY":       "INFY.NS",
-    "ICICIBANK":  "ICICIBANK.NS",
-    "SBIN":       "SBIN.NS",
-    "MARUTI":     "MARUTI.NS",
-    "ONGC":       "ONGC.NS",
+    "RELIANCE":  "RELIANCE.NS",
+    "TCS":       "TCS.NS",
+    "HDFCBANK":  "HDFCBANK.NS",
+    "INFY":      "INFY.NS",
+    "ICICIBANK": "ICICIBANK.NS",
+    "SBIN":      "SBIN.NS",
+    "MARUTI":    "MARUTI.NS",
+    "ONGC":      "ONGC.NS",
 }
 
-# ── OPTION SYMBOLS ──────────────────────────────────
 OPTION_SYMBOLS = {
     "NIFTY 50":  {"ticker": "^NSEI",    "lot": 75,  "step": 50},
     "BANKNIFTY": {"ticker": "^NSEBANK", "lot": 35,  "step": 100},
@@ -75,14 +73,12 @@ def is_market_open():
     now       = datetime.now(IST)
     today_str = now.strftime("%Y-%m-%d")
     print(f"Current IST: {now.strftime('%A %d %b %Y %I:%M %p IST')}")
-
     if now.weekday() >= 5:
         print("Weekend — market closed.")
         return False
     if today_str in NSE_HOLIDAYS_2026:
-        print(f"NSE Holiday — market closed.")
+        print("NSE Holiday — market closed.")
         return False
-
     op = now.replace(hour=9,  minute=15, second=0, microsecond=0)
     cl = now.replace(hour=15, minute=30, second=0, microsecond=0)
     if not (op <= now <= cl):
@@ -98,11 +94,11 @@ def get_job_type():
     if h == 15 and m >= 30:      return "market_close"
     return "scan"
 
-# ── EXPIRY CALC ─────────────────────────────────────
+# ── EXPIRY ──────────────────────────────────────────
 def get_expiry(index_name):
-    now       = datetime.now(IST)
-    today     = now.date()
-    target_day = 3 if index_name == "NIFTY 50" else 2  # Thu=3, Wed=2
+    now        = datetime.now(IST)
+    today      = now.date()
+    target_day = 3 if index_name == "NIFTY 50" else 2
     days_ahead = (target_day - today.weekday()) % 7
     if days_ahead == 0 and now.hour >= 15:
         days_ahead = 7
@@ -132,11 +128,11 @@ def get_macd(close):
 def get_ema(close, p):
     return close.ewm(span=p, adjust=False).mean()
 
-# ── COMMON DATA FETCHER ──────────────────────────────
+# ── FETCH DATA ──────────────────────────────────────
 def fetch_data(ticker):
-    sess = make_session()
-    df   = yf.download(ticker, period="30d", interval="15m",
-                       progress=False, auto_adjust=True, session=sess)
+    df = yf.download(ticker, period="30d", interval="15m",
+                     progress=False, auto_adjust=True,
+                     session=make_session())
     if df is None or len(df) < 40:
         time.sleep(3)
         df = yf.download(ticker, period="30d", interval="15m",
@@ -144,7 +140,7 @@ def fetch_data(ticker):
                          session=make_session())
     return df
 
-# ── COMMON SCORING ───────────────────────────────────
+# ── SCORING ─────────────────────────────────────────
 def calc_score(rsi, macd_v, sig_v, hist, hist_prev,
                ema9_v, ema21_v, ema50_v, cmp, vol_ratio):
     score = 0
@@ -152,18 +148,23 @@ def calc_score(rsi, macd_v, sig_v, hist, hist_prev,
     elif rsi < 45:       score += 1
     elif rsi > 65:       score -= 3
     elif rsi > 55:       score -= 1
-
     if macd_v > sig_v and hist > hist_prev:   score += 2
     elif macd_v < sig_v and hist < hist_prev: score -= 2
-
     if ema9_v > ema21_v > ema50_v:    score += 2
     elif ema9_v < ema21_v < ema50_v:  score -= 2
     elif cmp > ema21_v:               score += 1
     else:                             score -= 1
-
     if vol_ratio > 1.5:
         score += 1 if score > 0 else -1
     return score
+
+# ── RR CALC ─────────────────────────────────────────
+def calc_rr(entry, sl, target):
+    risk   = abs(entry - sl)
+    reward = abs(target - entry)
+    if risk == 0:
+        return "N/A"
+    return round(reward / risk, 2)
 
 # ── STOCK ANALYSIS ───────────────────────────────────
 def analyze_stock(name, ticker):
@@ -175,7 +176,6 @@ def analyze_stock(name, ticker):
 
         close  = df["Close"].squeeze()
         volume = df["Volume"].squeeze()
-
         rsi_s       = get_rsi(close)
         macd_s, sig = get_macd(close)
         ema9        = get_ema(close, 9)
@@ -195,7 +195,6 @@ def analyze_stock(name, ticker):
         vol_avg   = float(volume.rolling(20).mean().iloc[-1])
         vol_now   = float(volume.iloc[-1])
         vol_ratio = round(vol_now / (vol_avg + 1), 2)
-        chg       = round(((cmp - prev) / prev) * 100, 2)
         atr       = float((df["High"].squeeze() - df["Low"].squeeze())
                           .rolling(14).mean().iloc[-1])
 
@@ -223,14 +222,15 @@ def analyze_stock(name, ticker):
             t2    = round(cmp - atr * 3.0, 2)
             t3    = round(cmp - atr * 4.5, 2)
 
-        rr = round(abs(t1 - entry) / (abs(sl - entry) + 0.01), 2)
-        print(f"  {name}: STOCK {signal}! Score={score} Conf={conf}%")
+        rr1 = calc_rr(entry, sl, t1)
+        rr2 = calc_rr(entry, sl, t2)
+        rr3 = calc_rr(entry, sl, t3)
 
-        return dict(name=name, signal=signal, cmp=cmp, chg=chg,
+        print(f"  {name}: STOCK {signal}! Score={score} Conf={conf}%")
+        return dict(name=name, signal=signal,
                     entry=entry, sl=sl, t1=t1, t2=t2, t3=t3,
-                    rr=rr, rsi=round(rsi, 1), conf=conf,
-                    vol=vol_ratio, macd_bull=macd_v > sig_v,
-                    ema_bull=ema9_v > ema21_v)
+                    rr1=rr1, rr2=rr2, rr3=rr3,
+                    conf=conf, rsi=round(rsi, 1), vol=vol_ratio)
     except Exception as e:
         print(f"  Error {name}: {e}")
         return None
@@ -251,7 +251,6 @@ def analyze_option(name, info):
         high   = df["High"].squeeze()
         low    = df["Low"].squeeze()
         volume = df["Volume"].squeeze()
-
         rsi_s       = get_rsi(close)
         macd_s, sig = get_macd(close)
         ema9        = get_ema(close, 9)
@@ -271,7 +270,6 @@ def analyze_option(name, info):
         vol_avg   = float(volume.rolling(20).mean().iloc[-1])
         vol_now   = float(volume.iloc[-1])
         vol_ratio = round(vol_now / (vol_avg + 1), 2)
-        chg       = round(((cmp - prev) / prev) * 100, 2)
         atr       = float((high - low).rolling(14).mean().iloc[-1])
 
         score = calc_score(rsi, macd_v, sig_v, hist, hist_prev,
@@ -292,27 +290,30 @@ def analyze_option(name, info):
         expiry_str = expiry.strftime("%d %b '%y").upper()
         dte        = (expiry - datetime.now(IST).date()).days
 
-        dte_factor  = max(1, dte)
-        atm_premium = round(atr * 0.4 * (dte_factor ** 0.5), 1)
-        itm_premium = round(atm_premium * 1.6, 1)
-        otm_premium = round(atm_premium * 0.5, 1)
+        atm_premium  = round(atr * 0.4 * (max(1, dte) ** 0.5), 1)
+        itm_premium  = round(atm_premium * 1.6, 1)
+        otm_premium  = round(atm_premium * 0.5, 1)
+        prem_sl      = round(atm_premium * 0.4, 1)
 
         if direction == "BUY":
-            entry_price = round(cmp, 0)
-            sl_price    = round(cmp - atr * 1.5, 0)
-            t1_price    = round(cmp + atr * 2.0, 0)
-            t2_price    = round(cmp + atr * 3.5, 0)
+            spot_entry = round(cmp, 0)
+            spot_sl    = round(cmp - atr * 1.5, 0)
+            spot_t1    = round(cmp + atr * 2.0, 0)
+            spot_t2    = round(cmp + atr * 3.5, 0)
         else:
-            entry_price = round(cmp, 0)
-            sl_price    = round(cmp + atr * 1.5, 0)
-            t1_price    = round(cmp - atr * 2.0, 0)
-            t2_price    = round(cmp - atr * 3.5, 0)
+            spot_entry = round(cmp, 0)
+            spot_sl    = round(cmp + atr * 1.5, 0)
+            spot_t1    = round(cmp - atr * 2.0, 0)
+            spot_t2    = round(cmp - atr * 3.5, 0)
 
-        move1        = abs(t1_price - entry_price) * 0.5
-        move2        = abs(t2_price - entry_price) * 0.5
-        prem_t1      = round(atm_premium + move1, 1)
-        prem_t2      = round(atm_premium + move2, 1)
-        prem_sl      = round(atm_premium * 0.4, 1)
+        move1   = abs(spot_t1 - spot_entry) * 0.5
+        move2   = abs(spot_t2 - spot_entry) * 0.5
+        prem_t1 = round(atm_premium + move1, 1)
+        prem_t2 = round(atm_premium + move2, 1)
+
+        rr1 = calc_rr(atm_premium, prem_sl, prem_t1)
+        rr2 = calc_rr(atm_premium, prem_sl, prem_t2)
+
         lot_profit_t1 = round((prem_t1 - atm_premium) * lot)
         lot_profit_t2 = round((prem_t2 - atm_premium) * lot)
         lot_loss      = round((atm_premium - prem_sl) * lot)
@@ -322,117 +323,101 @@ def analyze_option(name, info):
 
         return dict(
             name=name, direction=direction, option_type=option_type,
-            cmp=round(cmp, 0), chg=chg, score=score, conf=conf,
+            cmp=round(cmp, 0), expiry_str=expiry_str, dte=dte,
             atm=atm, itm=itm, otm=otm,
-            expiry_str=expiry_str, dte=dte,
             atm_premium=atm_premium, itm_premium=itm_premium,
-            otm_premium=otm_premium,
-            entry_price=entry_price, sl_price=sl_price,
-            t1_price=t1_price, t2_price=t2_price,
-            prem_t1=prem_t1, prem_t2=prem_t2, prem_sl=prem_sl,
+            otm_premium=otm_premium, prem_sl=prem_sl,
+            prem_t1=prem_t1, prem_t2=prem_t2,
+            rr1=rr1, rr2=rr2,
             lot=lot, lot_profit_t1=lot_profit_t1,
             lot_profit_t2=lot_profit_t2, lot_loss=lot_loss,
-            rsi=round(rsi, 1), vol=vol_ratio,
-            macd_bull=macd_v > sig_v, ema_bull=ema9_v > ema21_v,
-            atr=round(atr, 1)
+            conf=conf, rsi=round(rsi, 1)
         )
     except Exception as e:
         print(f"  Error {name}: {e}")
         return None
 
 # ── STOCK MESSAGE FORMAT ─────────────────────────────
-def fmt_stock_signal(s):
-    arrow   = "🟢" if s["signal"] == "BUY" else "🔴"
-    header  = "📈 *BUY SIGNAL*" if s["signal"] == "BUY" else "📉 *SELL SIGNAL*"
-    chg_str = f"+{s['chg']}%" if s["chg"] >= 0 else f"{s['chg']}%"
-    stars   = "⭐" * min(5, max(1, s["conf"] // 20))
+def fmt_stock(s):
     now_str = datetime.now(IST).strftime("%I:%M %p IST")
-    mk      = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
-    ek      = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
-    rsi_tag = ("🔥 Oversold"    if s["rsi"] < 35
-               else "❄️ Overbought" if s["rsi"] > 65
-               else "✅ Normal")
+
+    if s["signal"] == "BUY":
+        header    = "🟢 *BUY SIGNAL* 🟢"
+        entry_ico = "▶️"
+    else:
+        header    = "🔴 *SELL SIGNAL* 🔴"
+        entry_ico = "🔻"
 
     return (
-        f"{arrow} {header}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 *{esc(s['name'])}* \\[STOCK\\]\n"
-        f"💰 CMP: ₹{esc(s['cmp'])} \\({esc(chg_str)}\\)\n"
-        f"🕐 Time: {esc(now_str)}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 *TRADE SETUP*\n"
-        f"▶️ Entry:     ₹{esc(s['entry'])}\n"
+        f"{header}\n"
+        f"\n"
+        f"📌 *{esc(s['name'])}*\n"
+        f"💹 NSE STOCK\n"
+        f"⏰ {esc(now_str)}\n"
+        f"\n"
+        f"{entry_ico} Entry: ₹{esc(s['entry'])}\n"
         f"🛑 Stop Loss: ₹{esc(s['sl'])}\n"
-        f"🎯 Target 1:  ₹{esc(s['t1'])}\n"
-        f"🎯 Target 2:  ₹{esc(s['t2'])}\n"
-        f"🎯 Target 3:  ₹{esc(s['t3'])}\n"
-        f"⚖️ R:R Ratio: 1:{esc(s['rr'])}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📐 *INDICATORS*\n"
-        f"• RSI: {esc(s['rsi'])} — {rsi_tag}\n"
-        f"• MACD: {mk}\n"
-        f"• EMA: {ek}\n"
-        f"• Volume: {esc(s['vol'])}x {'🚀' if s['vol'] > 2 else '📊'}\n"
-        f"• Confidence: {stars} {esc(s['conf'])}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ _Educational only\\. Not SEBI advice\\._\n"
+        f"\n"
+        f"🎯 Target 1: ₹{esc(s['t1'])}\n"
+        f"🎯 Target 2: ₹{esc(s['t2'])}\n"
+        f"🎯 Target 3: ₹{esc(s['t3'])}\n"
+        f"\n"
+        f"⚖️ Risk : Reward\n"
+        f"• T1 → 1 : {esc(s['rr1'])}\n"
+        f"• T2 → 1 : {esc(s['rr2'])}\n"
+        f"• T3 → 1 : {esc(s['rr3'])}\n"
+        f"\n"
+        f"📊 Confidence: {esc(s['conf'])}%\n"
+        f"\n"
+        f"⚠️ _Educational purpose only\\. Not financial advice\\._\n"
         f"🔔 @SignalBharat"
     )
 
 # ── OPTION MESSAGE FORMAT ────────────────────────────
-def fmt_option_signal(s):
-    arrow     = "🟢" if s["direction"] == "BUY" else "🔴"
-    opt_emoji = "📈" if s["option_type"] == "CE" else "📉"
-    chg_str   = f"+{s['chg']}%" if s["chg"] >= 0 else f"{s['chg']}%"
-    stars     = "⭐" * min(5, max(1, s["conf"] // 20))
-    now_str   = datetime.now(IST).strftime("%I:%M %p IST")
-    mk        = "Bullish 🟢" if s["macd_bull"] else "Bearish 🔴"
-    ek        = "Bullish 🟢" if s["ema_bull"]  else "Bearish 🔴"
-    rsi_tag   = ("🔥 Oversold"    if s["rsi"] < 35
-                 else "❄️ Overbought" if s["rsi"] > 65
-                 else "✅ Normal")
-    action    = "BUY CE" if s["option_type"] == "CE" else "BUY PE"
+def fmt_option(s):
+    now_str = datetime.now(IST).strftime("%I:%M %p IST")
+    action  = "BUY CE" if s["option_type"] == "CE" else "BUY PE"
+
+    if s["direction"] == "BUY":
+        header    = "🟢 *BUY CE SIGNAL* 🟢"
+        entry_ico = "▶️"
+    else:
+        header    = "🔴 *BUY PE SIGNAL* 🔴"
+        entry_ico = "🔻"
 
     return (
-        f"{arrow} {opt_emoji} *{esc(action)} SIGNAL*\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📌 *{esc(s['name'])}* \\[OPTIONS\\]\n"
-        f"💹 Spot: ₹{esc(s['cmp'])} \\({esc(chg_str)}\\)\n"
-        f"🕐 Time: {esc(now_str)}\n"
+        f"{header}\n"
+        f"\n"
+        f"📌 *{esc(s['name'])}*\n"
         f"📅 Expiry: {esc(s['expiry_str'])} \\({esc(s['dte'])} days\\)\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 *OPTION STRIKES*\n"
-        f"• ITM {esc(s['option_type'])}: {esc(s['itm'])} @ ₹{esc(s['itm_premium'])} est\\.\n"
-        f"• ATM {esc(s['option_type'])}: {esc(s['atm'])} @ ₹{esc(s['atm_premium'])} est\\. ⭐\n"
-        f"• OTM {esc(s['option_type'])}: {esc(s['otm'])} @ ₹{esc(s['otm_premium'])} est\\.\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 *SPOT LEVELS*\n"
-        f"▶️ Entry: ₹{esc(s['entry_price'])}\n"
-        f"🛑 SL:    ₹{esc(s['sl_price'])}\n"
-        f"🎯 T1:    ₹{esc(s['t1_price'])}\n"
-        f"🎯 T2:    ₹{esc(s['t2_price'])}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *PREMIUM TARGETS \\(ATM\\)*\n"
-        f"▶️ Buy Around: ₹{esc(s['atm_premium'])}\n"
-        f"🛑 SL Below:   ₹{esc(s['prem_sl'])}\n"
-        f"🎯 Target 1:   ₹{esc(s['prem_t1'])}\n"
-        f"🎯 Target 2:   ₹{esc(s['prem_t2'])}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 *LOT SIZE: {esc(s['lot'])} qty*\n"
+        f"⏰ {esc(now_str)}\n"
+        f"\n"
+        f"💹 Spot Price: ₹{esc(s['cmp'])}\n"
+        f"\n"
+        f"🎯 *STRIKES*\n"
+        f"• ITM {esc(s['option_type'])}: {esc(s['itm'])} @ ₹{esc(s['itm_premium'])}\n"
+        f"• ATM {esc(s['option_type'])}: {esc(s['atm'])} @ ₹{esc(s['atm_premium'])} ⭐\n"
+        f"• OTM {esc(s['option_type'])}: {esc(s['otm'])} @ ₹{esc(s['otm_premium'])}\n"
+        f"\n"
+        f"{entry_ico} Buy Around: ₹{esc(s['atm_premium'])}\n"
+        f"🛑 Stop Loss: ₹{esc(s['prem_sl'])}\n"
+        f"\n"
+        f"🎯 Target 1: ₹{esc(s['prem_t1'])}\n"
+        f"🎯 Target 2: ₹{esc(s['prem_t2'])}\n"
+        f"\n"
+        f"⚖️ Risk : Reward\n"
+        f"• T1 → 1 : {esc(s['rr1'])}\n"
+        f"• T2 → 1 : {esc(s['rr2'])}\n"
+        f"\n"
+        f"📦 Lot Size: {esc(s['lot'])} qty\n"
         f"✅ Profit T1: ₹{esc(s['lot_profit_t1'])} per lot\n"
         f"✅ Profit T2: ₹{esc(s['lot_profit_t2'])} per lot\n"
-        f"❌ Max Loss:  ₹{esc(s['lot_loss'])} per lot\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📐 *INDICATORS*\n"
-        f"• RSI: {esc(s['rsi'])} — {rsi_tag}\n"
-        f"• MACD: {mk}\n"
-        f"• EMA: {ek}\n"
-        f"• ATR: {esc(s['atr'])} pts\n"
-        f"• Volume: {esc(s['vol'])}x {'🚀' if s['vol'] > 2 else '📊'}\n"
-        f"• Confidence: {stars} {esc(s['conf'])}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚠️ _Premium estimated\\. Check live on NSE\\._\n"
-        f"⚠️ _Educational only\\. Not SEBI advice\\._\n"
+        f"❌ Max Loss: ₹{esc(s['lot_loss'])} per lot\n"
+        f"\n"
+        f"📊 Confidence: {esc(s['conf'])}%\n"
+        f"\n"
+        f"⚠️ _Premium estimated\\. Verify on NSE\\._\n"
+        f"⚠️ _Educational purpose only\\. Not financial advice\\._\n"
         f"🔔 @SignalBharat"
     )
 
@@ -459,12 +444,12 @@ async def main():
             f"📅 {now_str}\n"
             "🕘 Market opens in 15 minutes\\!\n\n"
             "📌 *TODAY SCAN*\n"
-            "• NIFTY & BANKNIFTY Options CE/PE\n"
+            "• NIFTY & BANKNIFTY CE/PE Options\n"
             "• RELIANCE, TCS, HDFC, INFY\n"
             "• ICICI, SBIN, MARUTI, ONGC\n\n"
             "🎯 Signals 9:15 AM se shuru\\!\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "⚠️ _Educational only\\. Not SEBI advice\\._\n"
+            "⚠️ _Educational only\\. Not financial advice\\._\n"
             "🔔 @SignalBharat"
         )
         await bot.send_message(chat_id=CHANNEL_ID, text=text,
@@ -474,15 +459,15 @@ async def main():
     # ── MARKET OPEN ──
     if job == "market_open":
         text = (
-            "🔔 *MARKET OPEN — FULL SCAN*\n"
+            "🔔 *MARKET OPEN*\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"📅 {now_str}\n"
             "📊 NSE/BSE: *OPEN* 🟢\n\n"
             "🔍 Scanning:\n"
-            "• 📈 Options: NIFTY \\| BANKNIFTY\n"
-            "• 📊 Stocks: 8 symbols\n"
+            "• 📈 NIFTY & BANKNIFTY Options\n"
+            "• 📊 Top 8 Stocks\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "⚠️ _Educational only\\. Not SEBI advice\\._\n"
+            "⚠️ _Educational only\\. Not financial advice\\._\n"
             "🔔 @SignalBharat"
         )
         await bot.send_message(chat_id=CHANNEL_ID, text=text,
@@ -492,13 +477,13 @@ async def main():
     # ── MARKET CLOSE ──
     if job == "market_close":
         text = (
-            "🔔 *MARKET CLOSED — EOD*\n"
+            "🔔 *MARKET CLOSED*\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             f"📅 {now_str}\n"
             "⏰ NSE Closed at 3:30 PM IST\n\n"
             "💡 Kal ke signals ke liye ready raho\\!\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
-            "⚠️ _Educational only\\. Not SEBI advice\\._\n"
+            "⚠️ _Educational only\\. Not financial advice\\._\n"
             "🔔 @SignalBharat"
         )
         await bot.send_message(chat_id=CHANNEL_ID, text=text,
@@ -512,8 +497,8 @@ async def main():
 
     sent = 0
 
-    # ── STEP 1: OPTIONS FIRST ──
-    print(f"\n── OPTIONS SCAN ──")
+    # STEP 1 — OPTIONS
+    print("\n── OPTIONS SCAN ──")
     for name, info in OPTION_SYMBOLS.items():
         print(f"Analyzing {name} options...")
         result = analyze_option(name, info)
@@ -521,7 +506,7 @@ async def main():
             try:
                 await bot.send_message(
                     chat_id=CHANNEL_ID,
-                    text=fmt_option_signal(result),
+                    text=fmt_option(result),
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
                 sent += 1
@@ -530,8 +515,8 @@ async def main():
                 print(f"  Send error {name}: {e}")
         await asyncio.sleep(1)
 
-    # ── STEP 2: STOCKS ──
-    print(f"\n── STOCKS SCAN ──")
+    # STEP 2 — STOCKS
+    print("\n── STOCKS SCAN ──")
     for name, ticker in STOCK_SYMBOLS.items():
         print(f"Analyzing {name}...")
         result = analyze_stock(name, ticker)
@@ -539,7 +524,7 @@ async def main():
             try:
                 await bot.send_message(
                     chat_id=CHANNEL_ID,
-                    text=fmt_stock_signal(result),
+                    text=fmt_stock(result),
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
                 sent += 1
